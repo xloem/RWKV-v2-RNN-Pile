@@ -76,7 +76,10 @@ class RWKV_model_GPT_RNN_LM(RWKV_model_GPT_FULL_LM):
         self.rnn = RWKV_RNN(MODEL_NAME=model_name)
     def _model_generate(self, context, max_length, eos_token_id):
         with torch.no_grad():
-            self.model.clear()
+            try:
+                self.model.clear()
+            except:
+                pass
             states = [types.SimpleNamespace() for idx in range(context.shape[0])]
             context = context.to(self.device)
             logits = self.model(context)[:,-1,:]
