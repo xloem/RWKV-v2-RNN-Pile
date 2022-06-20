@@ -42,7 +42,7 @@ class RWKV_LM(BaseLM):
         return src.model.ctx_len
     @property
     def max_gen_toks(self):
-        return 256
+        return src.model.ctx_len
 
 class RWKV_model_GPT_FULL_LM(RWKV_LM):
     def __init__(self, model_name, device='cuda', batch_size=1):
@@ -96,6 +96,9 @@ class RWKV_model_GPT_RNN_LM(RWKV_model_GPT_FULL_LM):
                 next_logits = torch.tensor(token_id, device=self.device)[None,:]
                 output = torch.cat(output, next_logits, dim=1)
             return output
+    @property
+    def max_gen_toks(self):
+        return 8192
     
 
 logging.getLogger("openai").setLevel(logging.WARNING)
