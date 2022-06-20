@@ -34,15 +34,16 @@ class RWKV_ChannelMix(nn.Module):
         super().__init__()
         self.layer_id = layer_id
 
-        self.time_mix = nn.Parameter(torch.ones(1, 1, n_embd))
+        self.time_mix = nn.Parameter(torch.ones(1, 1, n_embd, device=RUN_DEVICE))
 
         hidden_sz = 4 * n_embd
-        self.key = nn.Linear(n_embd, hidden_sz, bias=False)
-        self.receptance = nn.Linear(n_embd, n_embd, bias=False)
-        self.value = nn.Linear(hidden_sz, n_embd, bias=False)
+        self.key = nn.Linear(n_embd, hidden_sz, bias=False, device=RUN_DEVICE)
+        self.receptance = nn.Linear(n_embd, n_embd, bias=False, device=RUN_DEVICE)
+        self.value = nn.Linear(hidden_sz, n_embd, bias=False, device=RUN_DEVICE)
 
     def time_shift(self, x):
-        return torch.cat([self.xx[...,None,:], x], dim=-2)[...,:-1,:]
+        return torch.cat([self.xx.expand(x.shape[0],1,self.xx.shape[-1]), x], dim=-2)[...,:-1,:]
+        #return torch.cat([self.xx[...,None,:], x], dim=-2)[...,:-1,:]
 
     def forward(self, x):
         xx = x[...,-1,:].detach()
@@ -60,20 +61,20 @@ class RWKV_TimeMix(nn.Module):
     def __init__(self, layer_id):
         super().__init__()
         self.layer_id = layer_id
-        self.time_decay = nn.Parameter(torch.ones(n_embd, 1))
-        self.time_curve = torch.tensor([-(ctx_len - 2 - i) for i in range(ctx_len-1)]).unsqueeze(0)
-        self.time_first = nn.Parameter(torch.ones(n_embd, 1) * math.log(0.3))
+        self.time_decay = nn.Parameter(torch.ones(n_embd, 1, device=RUN_DEVICE))
+        self.time_curve = torch.tensor([-(ctx_len - 2 - i) for i in range(ctx_len-1)], device=RUN_DEVICE).unsqueeze(0)
+        self.time_first = nn.Parameter(torch.ones(n_embd, 1, device=RUN_DEVICE) * math.log(0.3))
         
-        self.time_mix = nn.Parameter(torch.ones(1,1,n_embd))
+        self.time_mix = nn.Parameter(torch.ones(1,1,n_embd, device=RUN_DEVICE))
 
-        self.key = nn.Linear(n_embd, n_embd, bias=False)
-        self.value = nn.Linear(n_embd, n_embd, bias=False)
-        self.receptance = nn.Linear(n_embd, n_embd, bias=False)
+        self.key = nn.Linear(n_embd, n_embd, bias=False, device=RUN_DEVICE)
+        self.value = nn.Linear(n_embd, n_embd, bias=False, device=RUN_DEVICE)
+        self.receptance = nn.Linear(n_embd, n_embd, bias=False, device=RUN_DEVICE)
 
-        self.output = nn.Linear(n_embd, n_embd, bias=False)
+        self.output = nn.Linear(n_embd, n_embd, bias=False, device=RUN_DEVICE)
 
     def time_shift(self, x):
-        return torch.cat([self.xx[...,None,:], x], dim=-2)[...,:-1,:]
+        return torch.cat([self.xx.expand(x.shape[0],1,self.xx.shape[-1]), x], dim=-2)[...,:-1,:]
 
     def forward(self, x):
         B, T, C = x.size()
@@ -92,6 +93,7 @@ class RWKV_TimeMix(nn.Module):
         mm = torch.ldexp(torch.tensor(0.5,device=k.device), mm.exponent)
 
         k = torch.exp(k - mm[...,None])
+        #import pdb; pdb.set_trace()
 
         kv = k * v
 
@@ -123,8 +125,8 @@ class Block(nn.Module):
         super().__init__()
         self.layer_id = layer_id
 
-        self.ln1 = nn.LayerNorm(n_embd)
-        self.ln2 = nn.LayerNorm(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd, device=RUN_DEVICE)
+        self.ln2 = nn.LayerNorm(n_embd, device=RUN_DEVICE)
         
         self.att = RWKV_TimeMix(layer_id)
         self.ffn = RWKV_ChannelMix(layer_id)
@@ -137,17 +139,19 @@ class Block(nn.Module):
         return x
 
 class RWKV_GPT(nn.Module):
-    def __init__(self, MODEL_NAME=MODEL_NAME):
+    def __init__(self, MODEL_NAME=MODEL_NAME, recurrent=True):
         super().__init__()
         print('\nloading RWKV-GPT', MODEL_NAME)
 
+        self.recurrent = recurrent
+
         self.tokenizer = PreTrainedTokenizerFast(tokenizer_file=VOCAB_NAME)
-        self.emb = nn.Embedding(vocab_size, n_embd)
+        self.emb = nn.Embedding(vocab_size, n_embd, device=RUN_DEVICE)
 
         self.blocks = nn.Sequential(*[Block(i) for i in range(n_layer)])
 
-        self.ln_out = nn.LayerNorm(n_embd)
-        self.head = nn.Linear(n_embd, vocab_size, bias=False)
+        self.ln_out = nn.LayerNorm(n_embd, device=RUN_DEVICE)
+        self.head = nn.Linear(n_embd, vocab_size, bias=False, device=RUN_DEVICE)
 
         self.ctx_len = ctx_len
         self.eval()
@@ -196,6 +200,9 @@ class RWKV_GPT(nn.Module):
     def forward(self, idx):
         B, T = idx.size()
         assert T <= self.ctx_len, "Cannot forward, because len(input) > model ctx_len."
+
+        if not self.recurrent:
+            self.clear()
         
         x = self.emb(idx)
         x = self.blocks(x)
