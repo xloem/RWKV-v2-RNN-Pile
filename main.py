@@ -1,11 +1,87 @@
 import argparse
 import json
 import logging
+import types
 import fnmatch
 
-from lm_eval import tasks, evaluator
+import torch
 
+from lm_eval import tasks, evaluator
+from lm_eval.base import BaseLM
+
+import src.model
 from src.model import RWKV_GPT, RWKV_RNN
+
+class RWKV_LM(BaseLM):
+    def __init__(self, model_name, device='cuda', batch_size=1):
+        super().__init__()
+        src.model.RUN_DEVICE = device
+        self.model_name = model_name
+        self.tokenizer = src.model.PreTrainedTokenizerFast(tokenizer_file='20B_tokenizer.json')
+        self._batch_size = batch_size
+        self._device = device
+    def __str__(self):
+        return self.__class__.__name__ + '/' + self.model_name
+    @property
+    def batch_size(self):
+        return self._batch_size
+    @property
+    def device(self):
+        return self._device
+    def tok_decode(self, *params, **kwparams):
+        return self.tokenizer.decode(*params, **kwparams)
+    def tok_encode(self, *params, **kwparams):
+        return self.tokenizer.encode(*params, **kwparams)
+    @property
+    def eot_token_id(self):
+        return self.tokenizer.eos_token_id
+    @property
+    def max_length(self):
+        return src.model.ctx_len
+    @property
+    def max_gen_toks(self):
+        return 256
+
+class RWKV_model_GPT_FULL_LM(RWKV_LM):
+    def __init__(self, model_name, device='cuda', batch_size=1):
+        super().__init__(model_name, device, batch_size)
+        self.model = RWKV_GPT(MODEL_NAME=model_name)
+    def _model_call(self, inps):
+        with torch.no_grad():
+            self.model.clear()
+            return self.model(inps)#[:,-1,:]
+    def _model_generate(self, context, max_length, eos_token_id):
+        start_len = context.shape[1]
+        while context.shape[1] < max_length:
+            self.model.clear()
+            logits = self.model(context)[:,-1,:]
+            token_ids = torch.argmax(logits,dim=-1)
+            context = torch.cat([context, token_ids], dim=1)
+        return context[:,start_len:]
+
+class RWKV_model_GPT_RNN_LM(RWKV_model_GPT_FULL_LM):
+    def __init__(self, model_name, device='cuda', batch_size=1):
+        super().__init__(model_name, device, batch_size)
+        self.model = RWKV_GPT(MODEL_NAME=model_name)
+        self.rnn = RWKV_RNN(MODEL_NAME=model_name)
+    def _model_generate(self, context, max_length, eos_token_id):
+        self.model.clear()
+        states = [types.SimpleNamespace() for idx in range(context.shape[0])]
+        logits = self.model(context)[:,-1,:]
+        self.model.save(states)
+        output = torch.argmax(logits, dim=-1)
+        while context.shape[1] < max_length:
+            next_token_ids = []
+            for state, batch in zip(states, output):
+                self.rnn.load(state)
+                logits_list = self.rnn.run([batch[-1]])
+                self.rnn.save(state)
+                token_id = max(range(self.tokenizer.vocab_size), key=lambda token_id: logits_list[token_id])
+                next_token_ids.append(token_id)
+            next_logits = torch.tensor(token_id, device=self.device)[None,:]
+            output = torch.cat(output, next_logits, dim=1)
+        return output
+    
 
 logging.getLogger("openai").setLevel(logging.WARNING)
 
@@ -29,7 +105,7 @@ class MultiChoice:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    #parser.add_argument("--model", required=True)
+    parser.add_argument("--model", required=True)
     parser.add_argument("--model_args", default="")
     parser.add_argument("--tasks", default=None, choices=MultiChoice(tasks.ALL_TASKS))
     parser.add_argument("--provide_description", action="store_true")
@@ -79,8 +155,11 @@ def main():
             description_dict = json.load(f)
 
     results = evaluator.simple_evaluate(
-        #model=args.model,
-        model=RWKV_GPT(MODEL_NAME='all-10803', recurrent=False),
+        model={
+            'GPT_FULL': RWKV_model_GPT_FULL_LM,
+            'GPT_RNN': RWKV_model_GPT_RNN_LM
+        }[args.model.split('/',1)[0]](args.model.split('/',1)[1], device=args.device, batch_size=args.batch_size),
+        #model=RWKV_GPT(MODEL_NAME='all-10803', recurrent=False),
         model_args=args.model_args,
         tasks=task_names,
         num_fewshot=args.num_fewshot,
