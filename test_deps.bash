@@ -9,4 +9,10 @@ WEIGHTS=20220615-10803
     unzip "$WEIGHTS".zip
     #rm "$WEIGHTS".zip
 } &
+{
+    git clone https://github.com/BlinkDL/RWKV-v2-RNN-Pile
+    cd RWKV-v2-RNN-Pile
+    ln -s ../*.pth
+    cp ../main.py .
+} &
 wait
