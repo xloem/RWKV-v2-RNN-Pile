@@ -22,6 +22,8 @@ class RWKV_LM(BaseLM):
         self._device = device
     def __str__(self):
         return self.__class__.__name__ + '/' + self.model_name
+    def toJSON(self):
+        return f'"{str(self)}"'
     @property
     def batch_size(self):
         return self._batch_size
