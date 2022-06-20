@@ -51,13 +51,19 @@ class RWKV_model_GPT_FULL_LM(RWKV_LM):
     def _model_call(self, inps):
         inps = inps.to(self.device)
         with torch.no_grad():
-            self.model.clear()
+            try:
+                self.model.clear()
+            except:
+                pass
             return self.model(inps)#[:,-1,:]
     def _model_generate(self, context, max_length, eos_token_id):
         context = context.to(self.device)
         start_len = context.shape[1]
         while context.shape[1] < max_length:
-            self.model.clear()
+            try:
+                self.model.clear()
+            except:
+                pass
             logits = self.model(context)[:,-1,:]
             token_ids = torch.argmax(logits,dim=-1)
             context = torch.cat([context, token_ids], dim=1)
