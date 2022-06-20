@@ -12,7 +12,7 @@ WEIGHTS=20220615-10803
 {
     git clone https://github.com/BlinkDL/RWKV-v2-RNN-Pile
     cd RWKV-v2-RNN-Pile
-    ln -s ../*.pth
-    cp ../main.py .
+    ln -sf ../*.pth .
+    ln -sf ../main.py
 } &
 wait
