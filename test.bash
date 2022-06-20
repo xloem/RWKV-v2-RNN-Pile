@@ -9,7 +9,10 @@ do
     
     for model in GPT_RNN/"$WEIGHTS" GPT_FULL/"$WEIGHTS"
     do
-        echo "$model"
-        python3 main.py --task lambada --model "$model" --device cuda --batch_size 16
+        for device in cuda cpu
+        do
+            echo "$model-$device"
+            python3 main.py --task lambada --model "$model" --device "$device" --batch_size 16
+        done
     done
 done
