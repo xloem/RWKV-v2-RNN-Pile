@@ -12,4 +12,3 @@ do
         python3 main.py --task lambada --model "$model" --device cuda --batch_size 16
     done
 done
-echo "CLASSIC"
