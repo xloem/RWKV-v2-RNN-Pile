@@ -177,8 +177,7 @@ def main():
         check_integrity=args.check_integrity,
     )
 
-    dumped = json.dumps(results, indent=2)
-    print(dumped)
+    print(results)
 
     if args.output_path:
         with open(args.output_path, "w") as f:
