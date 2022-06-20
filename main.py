@@ -69,23 +69,24 @@ class RWKV_model_GPT_RNN_LM(RWKV_model_GPT_FULL_LM):
         self.model = RWKV_GPT(MODEL_NAME=model_name)
         self.rnn = RWKV_RNN(MODEL_NAME=model_name)
     def _model_generate(self, context, max_length, eos_token_id):
-        self.model.clear()
-        states = [types.SimpleNamespace() for idx in range(context.shape[0])]
-        context = context.to(self.device)
-        logits = self.model(context)[:,-1,:]
-        self.model.save(states)
-        output = torch.argmax(logits, dim=-1)
-        while context.shape[1] < max_length:
-            next_token_ids = []
-            for state, batch in zip(states, output):
-                self.rnn.load(state)
-                logits_list = self.rnn.run([batch[-1]])
-                self.rnn.save(state)
-                token_id = max(range(self.tokenizer.vocab_size), key=lambda token_id: logits_list[token_id])
-                next_token_ids.append(token_id)
-            next_logits = torch.tensor(token_id, device=self.device)[None,:]
-            output = torch.cat(output, next_logits, dim=1)
-        return output
+        with torch.no_grad():
+            self.model.clear()
+            states = [types.SimpleNamespace() for idx in range(context.shape[0])]
+            context = context.to(self.device)
+            logits = self.model(context)[:,-1,:]
+            self.model.save(states)
+            output = torch.argmax(logits, dim=-1)
+            while context.shape[1] < max_length:
+                next_token_ids = []
+                for state, batch in zip(states, output):
+                    self.rnn.load(state)
+                    logits_list = self.rnn.run([batch[-1]])
+                    self.rnn.save(state)
+                    token_id = max(range(self.tokenizer.vocab_size), key=lambda token_id: logits_list[token_id])
+                    next_token_ids.append(token_id)
+                next_logits = torch.tensor(token_id, device=self.device)[None,:]
+                output = torch.cat(output, next_logits, dim=1)
+            return output
     
 
 logging.getLogger("openai").setLevel(logging.WARNING)
