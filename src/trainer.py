@@ -109,6 +109,7 @@ class Trainer:
                 if len(recurrence_idcs) > len(recurrent_states_now):
                     recurrent_states_now[:] = [None] * len(x)
                 for batch_idx, (recurrence_idx, more_remains) in enumerate(recurrence_idcs):
+                    recurrence_idx = recurrence_idx[0].item()
                     if recurrence_idx in recurrent_states_all:
                         recurrent_states_now[batch_idx] = recurrent_states_all[recurrence_idx]
                     else:
