@@ -12,13 +12,41 @@ import torch.nn as nn
 from torch.nn import functional as F
 logger = logging.getLogger(__name__)
 
+##try:
+##    raise Exception()
+#import fewbit
+##except:
+Linear = nn.Linear
+relu = F.relu
+sigmoid = F.sigmoid
+##else:
+#Linear = fewbit.LinearGRP
+#relu = fewbit.functional.relu
+#sigmoid = fewbit.functional.sigmoid
+
+#def stable_linear(linear, operand):
+#    return torch.stack([
+#        linear(operand[...,idx,:]) for idx in range(operand.shape[-2])
+#    ], dim=-2)
+#def stable_exp(operand):
+#    return torch.stack([
+#        torch.exp(operand[...,idx]) for idx in range(operand.shape[-1])
+#    ], dim=-1)
+#def stable_conv1d(data, kernel, groups='ignored'):
+#    data_size = data.shape[-1]
+#    kernel_size = kernel.shape[-1]
+#    return torch.stack([
+#        (data[...,idx:idx+kernel_size-1] * kernel.transpose(-2,-3)[...,:-1]).sum(dim=-1) + data[...,idx+kernel_size-1] * kernel.transpose(-2,-3)[...,-1]
+#        for idx in range(0,data_size-kernel_size+1)
+#    ], dim=-1)
+
 ########################################################################################################
 # CUDA Kernel
 ########################################################################################################
 
 T_MAX = 1024          # increase this if your ctx_len > 1024
-B_GROUP_FORWARD = 8   # set to 8 for best performance
-B_GROUP_BACKWARD = 2  # set to 2 for best performance
+B_GROUP_FORWARD = 1   # set to 8 for best performance
+B_GROUP_BACKWARD = 1  # set to 2 for best performance
 
 timex_cuda = load(name="timex", sources=["cuda/timex_op.cpp", "cuda/timex_cuda.cu"],
                   verbose=True, extra_cuda_cflags=['--use_fast_math', '--extra-device-vectorization', f'-DTmax={T_MAX}', f'-DBF={B_GROUP_FORWARD}', f'-DBB={B_GROUP_BACKWARD}'])
@@ -61,7 +89,7 @@ RWKV_HEAD_QK_DIM = 256
 
 # def RWKV_Init(module, config):  # fancy initialization of all lin & emb layer in the module
 #     for m in module.modules():
-#         if not isinstance(m, (nn.Linear, nn.Embedding)):
+#         if not isinstance(m, (Linear, nn.Embedding)):
 #             continue
 #         with torch.no_grad():
 #             name = '[unknown weight]'
@@ -80,7 +108,7 @@ RWKV_HEAD_QK_DIM = 256
 #                 else:
 #                     scale = 0
 
-#             if isinstance(m, nn.Linear):
+#             if isinstance(m, Linear):
 #                 if m.bias is not None:
 #                     m.bias.data.zero_()
 #                 if shape[0] > shape[1]:
@@ -137,7 +165,6 @@ class RWKV_TimeMix(nn.Module):
         self.time_decay = nn.Parameter(torch.log(decay_speed)) # will use exp(self.time_decay) to ensure time_decay > 0
         self.time_curve = torch.tensor(
             [-(self.ctx_len - 2 - i) for i in range(self.ctx_len-1)]).unsqueeze(0)
-        self.time_curve = self.time_curve.to('cuda')
         self.time_first = nn.Parameter(torch.ones(attn_sz, 1) * math.log(0.3))
         #############################################################################
 
@@ -147,11 +174,11 @@ class RWKV_TimeMix(nn.Module):
                 ww[0, 0, i] = 0
         self.time_mix = nn.Parameter(ww)
 
-        self.key = nn.Linear(config.n_embd, attn_sz, bias=False)
-        self.value = nn.Linear(config.n_embd, attn_sz, bias=False)
-        self.receptance = nn.Linear(config.n_embd, attn_sz, bias=False)
+        self.key = Linear(config.n_embd, attn_sz, bias=False)
+        self.value = Linear(config.n_embd, attn_sz, bias=False)
+        self.receptance = Linear(config.n_embd, attn_sz, bias=False)
 
-        self.output = nn.Linear(attn_sz, config.n_embd, bias=False)
+        self.output = Linear(attn_sz, config.n_embd, bias=False)
 
         self.key.scale_init = 0
         self.receptance.scale_init = 0
@@ -166,11 +193,13 @@ class RWKV_TimeMix(nn.Module):
 
         xx = x[...,-1,:]
         x = x * self.time_mix + self.time_shift(x) * (1 - self.time_mix)
-        self.xx = xx
 
         k = self.key(x).transpose(-1, -2)
         v = self.value(x).transpose(-1, -2)
         r = self.receptance(x)
+        #k = stable_linear(self.key, x).transpose(-1, -2)
+        #v = stable_linear(self.value, x).transpose(-1, -2)
+        #r = stable_linear(self.receptance, x)
 
         mm = torch.max(k, dim=-1).values
 
@@ -179,7 +208,10 @@ class RWKV_TimeMix(nn.Module):
         mm = torch.ldexp(torch.tensor(0.5,device=k.device), mm.exponent)
 
         k = torch.exp(k - mm[...,None])
+        #k = stable_exp(k - mm[...,None])
         kv = k * v
+
+        self.time_curve = self.time_curve.to(x.device)
 
         self.time_w = torch.cat(
             [torch.exp(self.time_decay) * self.time_curve, self.time_first], dim=-1)
@@ -191,15 +223,15 @@ class RWKV_TimeMix(nn.Module):
         T += 1
         extra_decay = w[...,-3]
 
-        wkv = TimeX.apply(w, kv, B, C, T, 0)[...,1:]
-        wk = TimeX.apply(w, k, B, C, T, 0)[...,1:]
+        wkv = TimeX.apply(w.cuda(), kv.cuda(), B, C, T, 0)[...,1:].to(x.device)
+        wk = TimeX.apply(w.cuda(), k.cuda(), B, C, T, 0)[...,1:].to(x.device)
 
         self.xx = xx
         self.bb = (wk[...,-1] - w[...,0,-1] * k[...,-1]) * extra_decay + k[...,-1]
         self.aa = (wkv[...,-1] - w[...,0,-1] * kv[...,-1]) * extra_decay + kv[...,-1]
         self.mm = mm
 
-        rwkv = torch.sigmoid(r) * torch.nan_to_num(wkv / wk).transpose(-1, -2)
+        rwkv = sigmoid(r) * torch.nan_to_num(wkv / wk).transpose(-1, -2)
         rwkv = self.output(rwkv)
         return rwkv
 
@@ -216,9 +248,9 @@ class RWKV_ChannelMix(nn.Module):
         self.time_mix = nn.Parameter(x)
 
         hidden_sz = 4 * config.n_embd
-        self.key = nn.Linear(config.n_embd, hidden_sz, bias=False)
-        self.receptance = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.value = nn.Linear(hidden_sz, config.n_embd, bias=False)
+        self.key = Linear(config.n_embd, hidden_sz, bias=False)
+        self.receptance = Linear(config.n_embd, config.n_embd, bias=False)
+        self.value = Linear(hidden_sz, config.n_embd, bias=False)
 
         self.value.scale_init = 0
         self.receptance.scale_init = 0
@@ -232,10 +264,10 @@ class RWKV_ChannelMix(nn.Module):
         self.xx = xx
 
         k = self.key(x)
-        k = torch.square(torch.relu(k))
+        k = torch.square(relu(k))
         kv = self.value(k)
 
-        rkv = torch.sigmoid(self.receptance(x)) * kv
+        rkv = sigmoid(self.receptance(x)) * kv
         return rkv
 
 ########################################################################################################
@@ -289,11 +321,11 @@ class GPT(nn.Module):
                                     for i in range(config.n_layer)])
 
         self.ln_out = nn.LayerNorm(config.n_embd)
-        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.head = Linear(config.n_embd, config.vocab_size, bias=False)
 
-        # self.head_q = nn.Linear(config.n_embd, RWKV_HEAD_QK_DIM, bias=False)
+        # self.head_q = Linear(config.n_embd, RWKV_HEAD_QK_DIM, bias=False)
         # self.head_q.scale_init = 0
-        # self.head_k = nn.Linear(config.n_embd, RWKV_HEAD_QK_DIM, bias=False)
+        # self.head_k = Linear(config.n_embd, RWKV_HEAD_QK_DIM, bias=False)
         # self.head_k.scale_init = 0.1
         # self.register_buffer("copy_mask", torch.tril(
         #     torch.ones(config.ctx_len, config.ctx_len)))
@@ -325,7 +357,7 @@ class GPT(nn.Module):
                     block.att.aa[idx] = zeros[0]
                     block.att.bb[idx] = zeros[0]
                     block.att.mm[idx] = zeros[0]
-    def save(self, *targets):
+    def save(self, *targets, device=None, detach=False):
         for target in targets:
             target.xx = {}
             target.aa = {}
@@ -333,26 +365,28 @@ class GPT(nn.Module):
             target.mm = {}
         for idx, block in enumerate(self.blocks):
             for batch, target in enumerate(targets):
-                target.xx[f'ffn.{idx}'] = block.ffn.xx[batch]
-                target.xx[f'att.{idx}'] = block.att.xx[batch]
-                target.aa[f'att.{idx}'] = block.att.aa[batch]
-                target.bb[f'att.{idx}'] = block.att.bb[batch]
-                target.mm[f'att.{idx}'] = block.att.mm[batch]
+                for layer, valuename in [('ffn', 'xx'), ('att','xx'), ('att','aa'), ('att','bb'), ('att','mm')]:
+                    value = getattr(getattr(block,layer), valuename)[batch]
+                    if detach:
+                        value = value.detach()
+                    if device is not None:
+                        value = value.to(device)
+                    getattr(target, valuename)[f'{layer}.{idx}'] = value
     def load(self, *targets):
-        zeros = torch.zeros(1, self.config.n_embd, device=self.emb.weight.device)
+        zeros = torch.zeros(self.config.n_embd, device=self.emb.weight.device)
         for idx, block in enumerate(self.blocks):
-            block.ffn.xx = torch.stack([target.xx[f'ffn.{idx}'] for target in targets]).to(self.emb.weight.device)
-            block.att.xx = torch.stack([target.xx[f'att.{idx}'] for target in targets]).to(self.emb.weight.device)
-            block.att.aa = torch.stack([target.aa[f'att.{idx}'] for target in targets]).to(self.emb.weight.device)
-            block.att.bb = torch.stack([target.bb[f'att.{idx}'] for target in targets]).to(self.emb.weight.device)
-            block.att.mm = torch.stack([target.mm[f'att.{idx}'] if hasattr(target, 'mm') else zeros[0] for target in targets]).to(self.emb.weight.device)
+            block.ffn.xx = torch.stack([target.xx.get(f'ffn.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
+            block.att.xx = torch.stack([target.xx.get(f'att.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
+            block.att.aa = torch.stack([target.aa.get(f'att.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
+            block.att.bb = torch.stack([target.bb.get(f'att.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
+            block.att.mm = torch.stack([target.mm.get(f'att.{idx}', zeros) if hasattr(target, 'mm') else zeros for target in targets]).to(self.emb.weight.device)
 
     def _init_weights(self, module):
-        if isinstance(module, (nn.Linear)):
+        if isinstance(module, (Linear)):
             module.weight.data.normal_(mean=0.0, std=0.01)
         if isinstance(module, (nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=1e-5)
-        if isinstance(module, nn.Linear) and module.bias is not None:
+        if isinstance(module, Linear) and module.bias is not None:
             module.bias.data.zero_()
 
     def configure_optimizers(self, train_config):
@@ -384,6 +418,7 @@ class GPT(nn.Module):
         return optimizer
 
     def forward(self, idx, targets=None, recur=False):
+        #import pdb; pdb.set_trace()
         if not recur:
             self.clear()
         self.step += 1

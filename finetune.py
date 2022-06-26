@@ -8,6 +8,7 @@
 import logging
 import datetime
 import json
+import sys
 from src.model_train import GPT, GPTConfig
 from src.trainer import Trainer, TrainerConfig
 import torch
@@ -18,19 +19,19 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cuda.matmul.allow_tf32 = True
 
 # lightweight values to test on my 2GB gpu
-#ctx_len = 96
-#n_layer = 3
-#n_embd = 128
+ctx_len = 96
+n_layer = 4#3
+n_embd = 256#128
 
-ctx_len = 768
-n_layer = 24
-n_embd = 1024
+#ctx_len = 768
+#n_layer = 24
+#n_embd = 1024
 vocab_size = 50277
 
 model_type = 'RWKV'
 model_name = '20220524-4006'
 
-datafile = 'train.npy' # use 'prepare-data.py' to tokenize .txt into .npy
+datafile = 'data.bin'#'train.npy' # use 'prepare-data.py' to tokenize .txt into .npy
 
 ########################################################################################################
 
@@ -65,32 +66,53 @@ num_workers = 0
 ########################################################################################################
 
 class Dataset(Dataset):
-    def __init__(self, data, vocab_size, ctx_len, epoch_length_fixed, batch_size):
-        data_size, vocab_size = len(data), vocab_size
-        print('data has %d tokens, %d unique.' % (data_size, vocab_size))
+    def __init__(self, datafile, vocab_size, ctx_len, group_size, batch_size):
+        self.datafile = open(datafile, 'rb') if datafile != '-' else sys.stdin.buffer
         self.ctx_len = ctx_len
-        self.epoch_length_fixed = epoch_length_fixed
         self.vocab_size = vocab_size
-        self.data = data
+        self.group_size = group_size
         self.batch_size = batch_size
+        self.count = 0
+        self.data = [self._new_offset_idx_data() for group_idx in range(self.group_size)]
+
+    def _new_offset_idx_data(self):
+        byte_size = int.from_bytes(self.datafile.read(8), 'little')
+        assert byte_size > 0
+        print('reading %d bytes' % byte_size)
+        data = np.frombuffer(self.datafile.read(byte_size), dtype='uint16').astype('int')
+        data_size = len(data)
+        self.count += 1
+        print('data %d has %d tokens, %d unique.' % (self.count, data_size, self.vocab_size))
+        return 0, self.count - 1, data
 
     def __iter__(self):
         for idx in range(len(self)):
             yield self[idx]
 
     def __len__(self):
-        return self.epoch_length_fixed
+        return sum(len(data) for offset, idx, data in self.data) // self.ctx_len
 
-    def __getitem__(self, idx):
-        if idx == 0:
-            # cheat: pick random mini-epoch offsets in dataset
-            self.epoch_offsets = np.random.randint(0, len(self.data) - (self.ctx_len * self.epoch_length_fixed + 1), self.batch_size)
+    def __getitem__(self, _idx):
+        # cheat: pick random data from among the group
+        group_idcs = np.random.choice(self.group_size, self.batch_size, replace=False)
 
-        epoch_offsets = self.epoch_offsets + self.ctx_len * idx
-        dixes = [
-            self.data[epoch_offset:epoch_offset + self.ctx_len+1]
-            for epoch_offset in epoch_offsets
-        ]
+        recurrences = []
+        dixes = []
+        for group_idx in group_idcs:
+            offset, idx, data = self.data[group_idx]
+            dixes.append(data[offset : offset + self.ctx_len+1])
+            if offset + ctx_len * 2 <= len(data):
+                self.data[group_idx] = (offset + ctx_len, idx + 1, data)
+                recurrences.append((idx, True))
+            else:
+                self.data[group_idx] = self._new_offset_idx_data()
+                recurrences.append((idx, False))
+        
+        #epoch_offsets = self.epoch_offsets + self.ctx_len * idx
+        #dixes = [
+        #    self.data[epoch_offset:epoch_offset + self.ctx_len+1]
+        #    for epoch_offset in epoch_offsets
+        #]
         x = torch.stack([
             torch.tensor(dix[:-1], dtype=torch.long,
                          device=torch.device('cuda'))
@@ -101,10 +123,10 @@ class Dataset(Dataset):
                          device=torch.device('cuda'))
             for dix in dixes
         ])
-        return idx, x, y
+        return recurrences, x, y
 
 print('loading data... ' + datafile)
-train_dataset = Dataset(np.load(datafile).astype('int'), vocab_size, ctx_len, epoch_length_fixed, batch_size)
+train_dataset = Dataset(datafile, vocab_size, ctx_len, batch_size * 2, batch_size)
 
 ########################################################################################################
 # Train model

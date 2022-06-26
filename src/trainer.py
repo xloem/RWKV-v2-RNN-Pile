@@ -14,6 +14,7 @@ import logging
 import os
 import datetime
 import sys
+import types
 import math
 
 # import wandb  # comment this if you don't have wandb
@@ -80,6 +81,9 @@ class Trainer:
         raw_model = model.module if hasattr(self.model, "module") else model
         optimizer = raw_model.configure_optimizers(config)
 
+        recurrent_states_all = {}
+        recurrent_states_now = []
+
         def run_epoch(split):
             is_train = split == 'train'
             model.train(is_train)
@@ -97,12 +101,34 @@ class Trainer:
             pbar = tqdm(enumerate(loader), total=len(
                 loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}') if is_train else enumerate(loader)
 
-            for it, (epoch_idx, x, y) in pbar:
-                x = x.to(self.device)  # place data on the correct device
-                y = y.to(self.device)
+            for it, (recurrence_idcs, x, y) in pbar:
+                x = x[0].to(self.device)  # place data on the correct device
+                y = y[0].to(self.device)
+
+                # load recurrent states
+                if len(recurrence_idcs) > len(recurrent_states_now):
+                    recurrent_states_now[:] = [None] * len(x)
+                for batch_idx, (recurrence_idx, more_remains) in enumerate(recurrence_idcs):
+                    if recurrence_idx in recurrent_states_all:
+                        recurrent_states_now[batch_idx] = recurrent_states_all[recurrence_idx]
+                    else:
+                        new_state = types.SimpleNamespace()
+                        new_state.xx = {}
+                        new_state.aa = {}
+                        new_state.bb = {}   
+                        new_state.mm = {}
+                        recurrent_states_now[batch_idx] = new_state
+                        recurrent_states_all[recurrence_idx] = new_state
+                    if not more_remains:
+                        del recurrent_states_all[recurrence_idx]
+                with torch.no_grad():
+                    model.load(*recurrent_states_now)
 
                 with torch.set_grad_enabled(is_train):
-                    _, loss = model(x, y, recur=(epoch_idx > 0))  # forward the model
+                    _, loss = model(x, y, recur=True)  # forward the model
+
+                with torch.no_grad(): # save recurrent states
+                    model.save(*recurrent_states_now, device='cpu', detach=True)
 
                 if is_train:  # backprop and update the parameters
                     model.zero_grad()
