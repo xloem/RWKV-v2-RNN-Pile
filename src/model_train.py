@@ -226,10 +226,15 @@ class RWKV_TimeMix(nn.Module):
         wkv = TimeX.apply(w.cuda(), kv.cuda(), B, C, T, 0)[...,1:].to(x.device)
         wk = TimeX.apply(w.cuda(), k.cuda(), B, C, T, 0)[...,1:].to(x.device)
 
+
         self.xx = xx
         self.bb = (wk[...,-1] - w[...,0,-1] * k[...,-1]) * extra_decay + k[...,-1]
         self.aa = (wkv[...,-1] - w[...,0,-1] * kv[...,-1]) * extra_decay + kv[...,-1]
         self.mm = mm
+        assert not xx.isnan().any()
+        assert not self.bb.isnan().any()
+        assert not self.aa.isnan().any()
+        assert not mm.isnan().any()
 
         rwkv = sigmoid(r) * torch.nan_to_num(wkv / wk).transpose(-1, -2)
         rwkv = self.output(rwkv)
