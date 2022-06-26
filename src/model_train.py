@@ -373,13 +373,14 @@ class GPT(nn.Module):
                         value = value.to(device)
                     getattr(target, valuename)[f'{layer}.{idx}'] = value
     def load(self, *targets):
-        zeros = torch.zeros(self.config.n_embd, device=self.emb.weight.device)
+        device = self.emb.weight.device
+        zeros = torch.zeros(self.config.n_embd, device=device)
         for idx, block in enumerate(self.blocks):
-            block.ffn.xx = torch.stack([target.xx.get(f'ffn.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
-            block.att.xx = torch.stack([target.xx.get(f'att.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
-            block.att.aa = torch.stack([target.aa.get(f'att.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
-            block.att.bb = torch.stack([target.bb.get(f'att.{idx}', zeros) for target in targets]).to(self.emb.weight.device)
-            block.att.mm = torch.stack([target.mm.get(f'att.{idx}', zeros) if hasattr(target, 'mm') else zeros for target in targets]).to(self.emb.weight.device)
+            block.ffn.xx = torch.stack([target.xx.get(f'ffn.{idx}', zeros).to(device) for target in targets])
+            block.att.xx = torch.stack([target.xx.get(f'att.{idx}', zeros).to(device) for target in targets])
+            block.att.aa = torch.stack([target.aa.get(f'att.{idx}', zeros).to(device) for target in targets])
+            block.att.bb = torch.stack([target.bb.get(f'att.{idx}', zeros).to(device) for target in targets])
+            block.att.mm = torch.stack([target.mm.get(f'att.{idx}', zeros).to(device) if hasattr(target, 'mm') else zeros for target in targets])
 
     def _init_weights(self, module):
         if isinstance(module, (Linear)):
